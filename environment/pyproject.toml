@@ -6,4 +6,5 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aind-behavior-vr-foraging-packaging==0.0.19",
+    "aind-data-access-api>=1.10.0",
 ]
