@@ -16,7 +16,7 @@ DOCDB_DATABASE = "metadata_index"
 DOCDB_COLLECTION = "data_assets"
 DOCDB_VERSION = "v2"
 PACKAGING_PROCESS_NAME = "primary-nwb-packaging-vr-foraging"
-DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "vr_paper_manifest.csv"
+DEFAULT_MANIFEST_PATH = Path(__file__).with_name("vr_paper_manifest.csv")
 
 
 def _creation_time(record: dict) -> datetime:
