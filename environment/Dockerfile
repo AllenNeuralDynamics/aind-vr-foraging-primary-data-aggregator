@@ -5,3 +5,8 @@ FROM $REGISTRY_HOST/codeocean/ubuntu:26.04
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
 COPY git-ask-pass /
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+COPY ./pyproject.toml ./uv.lock ./.python-version ./
+RUN uv sync --locked
