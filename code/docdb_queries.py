@@ -58,7 +58,6 @@ def _packaging_version(record: dict) -> Optional[str]:
 
 
 def query_derived_assets_by_packaging_version(
-    subject_id: str,
     min_version: Optional[str] = None,
     max_version: Optional[str] = None,
     most_recent_per_session: bool = True,
@@ -72,8 +71,6 @@ def query_derived_assets_by_packaging_version(
 
     Parameters
     ----------
-    subject_id : str
-      Subject whose derived assets to return, e.g. ``"754582"``.
     min_version : Optional[str]
       Inclusive lower bound on packaging_version, e.g. ``"0.0.15"``. None
       leaves the range open below.
@@ -104,7 +101,6 @@ def query_derived_assets_by_packaging_version(
     above ``"0.0.19"``.
     """
     filter_query: dict = {
-        "subject.subject_id": subject_id,
         "data_description.data_level": "derived",
         "processing.data_processes": {
             "$elemMatch": {
