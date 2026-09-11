@@ -1,105 +1,118 @@
-""" DocDB queries for locating VR foraging derived assets """
+"""DocDB queries for locating VR-foraging derived assets."""
 
-from datetime import datetime, timezone
-from typing import Optional
+from __future__ import annotations
+
+import csv
+from collections import Counter
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from pathlib import Path
 
 from aind_data_access_api.document_db import MetadataDbClient
+from packaging.version import InvalidVersion, Version
 
 DOCDB_HOST = "api.allenneuraldynamics.org"
 DOCDB_DATABASE = "metadata_index"
 DOCDB_COLLECTION = "data_assets"
-# v2 serves the aind-data-schema v2 records the packaging pipeline writes.
-# MetadataDbClient defaults to v1, where these queries return nothing.
 DOCDB_VERSION = "v2"
-
-# The data process the VR foraging packaging pipeline writes into
-# processing.json, which carries packaging_version in output_parameters.
 PACKAGING_PROCESS_NAME = "primary-nwb-packaging-vr-foraging"
+DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "vr_paper_manifest.csv"
 
 
 def _creation_time(record: dict) -> datetime:
-    """Read data_description.creation_time as a tz-aware datetime.
-
-    Records missing or carrying an unparseable creation_time sort oldest.
-    """
-    data_description = record.get("data_description") or {}
-    value = data_description.get("creation_time")
+    """Read data_description.creation_time as a timezone-aware datetime."""
+    value = (record.get("data_description") or {}).get("creation_time")
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):
         try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(value)
         except ValueError:
-            return datetime.min.replace(tzinfo=timezone.utc)
+            return datetime.min.replace(tzinfo=UTC)
     else:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed
+        return datetime.min.replace(tzinfo=UTC)
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 def _source_sessions(record: dict) -> tuple[str, ...]:
-    """Raw session names this derived asset was built from."""
-    data_description = record.get("data_description") or {}
-    return tuple(data_description.get("source_data") or ())
+    """Return the raw session names from ``data_description.source_data``."""
+    source_data = (record.get("data_description") or {}).get("source_data") or ()
+    if isinstance(source_data, str):
+        return (source_data,)
+    return tuple(str(session) for session in source_data)
 
 
-def _packaging_version(record: dict) -> Optional[str]:
-    """Pull packaging_version out of the packaging data process, if present."""
-    processing = record.get("processing") or {}
-    for process in processing.get("data_processes") or []:
+def _packaging_version(record: dict) -> str | None:
+    """Extract the VR-foraging packaging version from a record, if present."""
+    processes = (record.get("processing") or {}).get("data_processes") or ()
+    for process in processes:
         if process.get("name") != PACKAGING_PROCESS_NAME:
             continue
-        output_parameters = process.get("output_parameters") or {}
-        version = output_parameters.get("packaging_version")
+        version = (process.get("output_parameters") or {}).get("packaging_version")
         if version is not None:
-            return version
+            return str(version)
     return None
 
 
+def _parse_version(value: str, *, context: str) -> Version:
+    try:
+        return Version(value)
+    except InvalidVersion as error:
+        raise ValueError(f"Invalid packaging version {value!r} in {context}") from error
+
+
+def _manifest_sessions(manifest_path: Path) -> list[str]:
+    """Read unique raw session names from the VR-paper manifest."""
+    with manifest_path.open(newline="", encoding="utf-8") as manifest_file:
+        reader = csv.DictReader(manifest_file)
+        if not reader.fieldnames or "session" not in reader.fieldnames:
+            raise ValueError(f"{manifest_path} must contain a 'session' column")
+        sessions = [
+            row["session"].strip() for row in reader if row.get("session", "").strip()
+        ]
+
+    duplicates = sorted(
+        session for session, count in Counter(sessions).items() if count > 1
+    )
+    if duplicates:
+        raise ValueError(
+            "Manifest has duplicate session values: " + ", ".join(duplicates)
+        )
+    if not sessions:
+        raise ValueError(f"{manifest_path} contains no session values")
+    return sessions
+
+
 def query_derived_assets_by_packaging_version(
-    min_version: Optional[str] = None,
-    max_version: Optional[str] = None,
-    most_recent_per_session: bool = True,
-    client: Optional[MetadataDbClient] = None,
+    min_version: str | None = None,
+    max_version: str | None = None,
+    source_sessions: Iterable[str] | None = None,
+    latest_per_source_session: bool = True,
+    client: MetadataDbClient | None = None,
     host: str = DOCDB_HOST,
     database: str = DOCDB_DATABASE,
     collection: str = DOCDB_COLLECTION,
     version: str = DOCDB_VERSION,
 ) -> list[dict]:
-    """Find derived assets packaged by a packaging version in [min, max].
+    """Query derived assets once, optionally limited to a set of raw sessions.
 
-    Parameters
-    ----------
-    min_version : Optional[str]
-      Inclusive lower bound on packaging_version, e.g. ``"0.0.15"``. None
-      leaves the range open below.
-    max_version : Optional[str]
-      Inclusive upper bound on packaging_version, e.g. ``"0.0.19"``. None
-      leaves the range open above.
-    most_recent_per_session : bool
-      When True (the default) return one asset per source session: the one
-      with the most recent data_description.creation_time. Sessions are
-      grouped by data_description.source_data. Set False to get every
-      match, including superseded repackagings.
-    client : Optional[MetadataDbClient]
-      Reuse an existing client instead of opening one.
-    host, database, collection, version : str
-      DocDB connection details, used only when ``client`` is None.
-
-    Returns
-    -------
-    list[dict]
-      One dict per asset with ``asset_name``, ``s3_location``, the
-      ``packaging_version`` that matched, ``creation_time`` and the
-      ``session_names`` it was derived from, ordered newest first.
-
-    Notes
-    -----
-    Version bounds are compared as strings, so they hold only while the
-    bounds and the stored versions share a digit width: ``"0.0.9"`` sorts
-    above ``"0.0.19"``.
+    Packaging-version bounds are inclusive and use PEP 440 version ordering.
+    When ``latest_per_source_session`` is true, each raw session contributes
+    only its highest in-range packaging version; creation time breaks ties.
     """
+    minimum = (
+        _parse_version(min_version, context="min_version") if min_version else None
+    )
+    maximum = (
+        _parse_version(max_version, context="max_version") if max_version else None
+    )
+    if minimum is not None and maximum is not None and minimum > maximum:
+        raise ValueError("min_version cannot be greater than max_version")
+
+    requested_sessions = tuple(dict.fromkeys(source_sessions or ()))
+    if source_sessions is not None and not requested_sessions:
+        return []
+
     filter_query: dict = {
         "data_description.data_level": "derived",
         "processing.data_processes": {
@@ -109,6 +122,8 @@ def query_derived_assets_by_packaging_version(
             }
         },
     }
+    if requested_sessions:
+        filter_query["data_description.source_data"] = {"$in": list(requested_sessions)}
 
     projection = {
         "name": 1,
@@ -117,9 +132,7 @@ def query_derived_assets_by_packaging_version(
         "data_description.source_data": 1,
         "processing.data_processes": 1,
     }
-
-    owns_client = client is None
-    if owns_client:
+    if client is None:
         client = MetadataDbClient(
             host=host,
             database=database,
@@ -127,39 +140,114 @@ def query_derived_assets_by_packaging_version(
             version=version,
         )
 
-    records = client.retrieve_docdb_records(
-        filter_query=filter_query, projection=projection
-    )
+    # ``retrieve_docdb_records`` puts its filter in a GET query string. A
+    # manifest-sized ``$in`` list exceeds API-gateway URL limits, so use the
+    # aggregate endpoint's POST body for the one bulk manifest query.
+    if requested_sessions:
+        records = client.aggregate_docdb_records(
+            pipeline=[{"$match": filter_query}, {"$project": projection}]
+        )
+    else:
+        records = client.retrieve_docdb_records(
+            filter_query=filter_query,
+            projection=projection,
+        )
 
-    results = []
+    results: list[dict] = []
     for record in records:
-        version = _packaging_version(record)
-        if version is None:
+        packaging_version = _packaging_version(record)
+        if packaging_version is None:
             continue
-        if min_version is not None and version < min_version:
+        parsed_version = _parse_version(
+            packaging_version,
+            context=f"asset {record.get('name')!r}",
+        )
+        if (minimum is not None and parsed_version < minimum) or (
+            maximum is not None and parsed_version > maximum
+        ):
             continue
-        if max_version is not None and version > max_version:
-            continue
+
         sessions = _source_sessions(record)
         results.append(
             {
                 "asset_name": record.get("name"),
                 "s3_location": record.get("location"),
-                "packaging_version": version,
+                "packaging_version": packaging_version,
                 "creation_time": _creation_time(record),
                 "session_names": list(sessions),
-                # Assets with no source_data group under their own name
-                # rather than collapsing together.
-                "_group": sessions or (record.get("name"),),
+                "_version": parsed_version,
             }
         )
 
-    results.sort(key=lambda result: result["creation_time"], reverse=True)
-    if most_recent_per_session:
-        newest: dict = {}
+    results.sort(
+        key=lambda item: (item["_version"], item["creation_time"]), reverse=True
+    )
+    if latest_per_source_session:
+        latest: dict[tuple[str, ...], dict] = {}
         for result in results:
-            newest.setdefault(result["_group"], result)
-        results = list(newest.values())
+            group = tuple(result["session_names"]) or (str(result["asset_name"]),)
+            latest.setdefault(group, result)
+        results = list(latest.values())
+
     for result in results:
-        del result["_group"]
+        del result["_version"]
     return results
+
+
+def query_manifest_derived_assets(
+    manifest_path: Path = DEFAULT_MANIFEST_PATH,
+    min_version: str | None = None,
+    max_version: str | None = None,
+    client: MetadataDbClient | None = None,
+) -> list[dict]:
+    """Return the latest in-range derived asset for every manifest session.
+
+    The manifest session column and selected DocDB ``source_data`` must be a
+    one-to-one match. A result with zero or multiple source sessions is
+    rejected because it cannot be mapped unambiguously to one manifest row.
+    """
+    manifest_sessions = _manifest_sessions(manifest_path)
+    results = query_derived_assets_by_packaging_version(
+        min_version=min_version,
+        max_version=max_version,
+        source_sessions=manifest_sessions,
+        latest_per_source_session=True,
+        client=client,
+    )
+
+    returned_sessions: list[str] = []
+    ambiguous_assets: list[str] = []
+    for result in results:
+        source_sessions = result["session_names"]
+        if len(source_sessions) != 1:
+            ambiguous_assets.append(str(result["asset_name"]))
+            continue
+        returned_sessions.append(source_sessions[0])
+
+    expected = Counter(manifest_sessions)
+    actual = Counter(returned_sessions)
+    missing = sorted((expected - actual).elements())
+    unexpected = sorted((actual - expected).elements())
+    duplicates = sorted(session for session, count in actual.items() if count > 1)
+    if ambiguous_assets or missing or unexpected or duplicates:
+        problems: list[str] = []
+        if ambiguous_assets:
+            problems.append(
+                "assets with non-singleton source_data: " + ", ".join(ambiguous_assets)
+            )
+        if missing:
+            problems.append(
+                "manifest sessions with no selected asset: " + ", ".join(missing)
+            )
+        if unexpected:
+            problems.append(
+                "selected sessions absent from manifest: " + ", ".join(unexpected)
+            )
+        if duplicates:
+            problems.append(
+                "sessions selected more than once: " + ", ".join(duplicates)
+            )
+        raise ValueError("Manifest/DocDB source-data mismatch; " + "; ".join(problems))
+
+    result_by_session = {result["session_names"][0]: result for result in results}
+    return [result_by_session[session] for session in manifest_sessions]

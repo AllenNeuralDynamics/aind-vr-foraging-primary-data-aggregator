@@ -7,4 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "aind-behavior-vr-foraging-packaging==0.0.19",
     "aind-data-access-api>=1.10.0",
+    "packaging>=26.3",
+    "ruff>=0.16.7",
+    "s3fs>=2026.7.0",
 ]
