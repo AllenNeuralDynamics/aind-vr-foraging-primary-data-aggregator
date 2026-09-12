@@ -202,12 +202,12 @@ def _repository_metadata() -> dict[str, object]:
     status = _git_output("status", "--porcelain=v1", "--untracked-files=all")
     if status is None:
         return {
-            "commit": "none",
-            "dirty": "none",
-            "working_tree_status": "none",
-            "status": "none",
+            "commit": None,
+            "dirty": None,
+            "working_tree_status": None,
+            "status": "unavailable",
         }
-    commit = _git_output("rev-parse", "HEAD") or "none"
+    commit = _git_output("rev-parse", "HEAD")
     status_lines = status.splitlines()
     return {
         "commit": commit,
@@ -252,31 +252,34 @@ def _write_processing_metadata(
         {"name": name, "path": str(path), "sha256": _sha256(path)}
         for name, path in outputs.items()
     ]
+    code_fields: dict[str, object] = {
+        "url": _repository_url(),
+        "name": "aind-vr-foraging-primary-data-aggregator",
+        "language": "Python",
+        "language_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "input_data": input_assets,
+        "parameters": {
+            "packaging_version_bounds": {
+                "minimum": MIN_PACKAGING_VERSION,
+                "maximum": MAX_PACKAGING_VERSION,
+            },
+            "input_manifest": {
+                "source_path": str(DEFAULT_MANIFEST_PATH),
+                "copied_output_path": DEFAULT_MANIFEST_PATH.name,
+            },
+            "repository": repository,
+        },
+    }
+    # Code Ocean capsules may not contain Git or a .git directory. Omit the
+    # field in that case: the schema permits an unknown hash, but not "none".
+    if isinstance(repository["commit"], str):
+        code_fields["commit_hash"] = repository["commit"]
+
     process = DataProcess(
         process_type=ProcessName.ANALYSIS,
         name="VR foraging primary-data aggregation",
         stage=ProcessStage.ANALYSIS,
-        code=Code(
-            url=_repository_url(),
-            name="aind-vr-foraging-primary-data-aggregator",
-            commit_hash=(
-                repository["commit"] if isinstance(repository["commit"], str) else None
-            ),
-            language="Python",
-            language_version=f"{sys.version_info.major}.{sys.version_info.minor}",
-            input_data=input_assets,
-            parameters={
-                "packaging_version_bounds": {
-                    "minimum": MIN_PACKAGING_VERSION,
-                    "maximum": MAX_PACKAGING_VERSION,
-                },
-                "input_manifest": {
-                    "source_path": str(DEFAULT_MANIFEST_PATH),
-                    "copied_output_path": DEFAULT_MANIFEST_PATH.name,
-                },
-                "repository": repository,
-            },
-        ),
+        code=Code(**code_fields),
         experimenters=maintainers,
         start_date_time=started_at,
         end_date_time=completed_at,
