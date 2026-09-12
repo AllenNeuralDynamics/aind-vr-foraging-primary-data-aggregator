@@ -97,7 +97,9 @@ def aggregate(
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
 
-    filesystem = s3fs.S3FileSystem()
+    # Derived assets are read from the public aind-open-data bucket. Using the
+    # capsule IAM role can turn a public object read into a denied signed call.
+    filesystem = s3fs.S3FileSystem(anon=True)
     aggregated: dict[str, pa.Table] = {}
     worker_count = min(max_workers, len(s3_locations))
 
