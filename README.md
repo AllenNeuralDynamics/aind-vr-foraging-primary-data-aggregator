@@ -1,3 +1,3 @@
-# aind-capsule-template
+# aind-vr-foraging-primary-data-aggregator
 
-Basic structure of a capsule to be customized as needed.
+Capsule that aggregates session-wise processed data for the VR Foraging task. The packaging and processing is done through this [library](https://github.com/AllenNeuralDynamics/Aind.Behavior.VrForaging.Packaging). This capsule then collects the processed session using queries on the `aind-data-schema` metadata, and then reads the sessions from S3 and aggregates them to parquet files. The two aggregated files are the session and sites parquet files. These are written to the `/results/` folder along with the `data_description` and `processing` `aind-data-schema` metadata files
