@@ -60,7 +60,7 @@ def _read_asset(
     s3_location: str,
     asset_name: str,
 ) -> pa.Table:
-    """Read one expected Parquet asset and add session provenance when needed."""
+    """Read one expected Parquet asset and add source provenance when needed."""
     s3_path = _s3_asset_path(s3_location, asset_name)
     try:
         with filesystem.open(s3_path, "rb") as source:
@@ -105,8 +105,9 @@ def aggregate(
     """Aggregate the same Parquet assets from every S3 location.
 
     Each requested asset must exist beneath every supplied S3 prefix. Reads for
-    an asset run concurrently (up to ``max_workers``). Rows originating from
-    ``session.parquet`` retain their source prefix in ``source_s3_location``.
+    an asset run concurrently (up to ``max_workers``). ``session.parquet`` is
+    aggregated first and maps each source prefix to the ``session_id`` added to
+    other tables.
     """
     if not s3_locations:
         raise ValueError("At least one S3 location is required")
@@ -114,12 +115,16 @@ def aggregate(
         raise ValueError("At least one Parquet asset is required")
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
+    if SESSION_TABLE not in tables:
+        raise ValueError(f"{SESSION_TABLE} is required for session provenance")
 
     # Derived assets are read from the public aind-open-data bucket. Using the
     # capsule IAM role can turn a public object read into a denied signed call.
     filesystem = s3fs.S3FileSystem(anon=True)
     aggregated: dict[str, pa.Table] = {}
     worker_count = min(max_workers, len(s3_locations))
+    session_by_location: dict[str, str] = {}
+    tables = (SESSION_TABLE, *(table for table in tables if table != SESSION_TABLE))
 
     for asset_name in tables:
         if not asset_name.endswith(".parquet"):
@@ -135,10 +140,35 @@ def aggregate(
                     s3_locations,
                 )
             )
+
+        if asset_name != SESSION_TABLE:
+            source_tables = [
+                table.add_column(
+                    0,
+                    pa.field("session_id", pa.large_string()),
+                    pa.repeat(
+                        pa.scalar(
+                            session_by_location[location], type=pa.large_string()
+                        ),
+                        table.num_rows,
+                    ),
+                )
+                if "session_id" not in table.column_names
+                else table
+                for table, location in zip(source_tables, s3_locations, strict=True)
+            ]
         aggregated[asset_name] = pa.concat_tables(
             source_tables,
             promote_options="permissive",
         )
+        if asset_name == SESSION_TABLE:
+            session_by_location = dict(
+                zip(
+                    aggregated[asset_name].column(SOURCE_LOCATION_COLUMN).to_pylist(),
+                    aggregated[asset_name].column("session_id").to_pylist(),
+                    strict=True,
+                )
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, Path] = {}
