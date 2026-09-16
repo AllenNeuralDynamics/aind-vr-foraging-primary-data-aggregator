@@ -32,8 +32,8 @@ from docdb_queries import DEFAULT_MANIFEST_PATH, query_manifest_derived_assets
 logger = logging.getLogger(__name__)
 
 # Set either bound to restrict which packaging versions may be selected.
-MIN_PACKAGING_VERSION: str | None = None
-MAX_PACKAGING_VERSION: str | None = None
+MIN_PACKAGING_VERSION: str | None = "0.20.0"
+MAX_PACKAGING_VERSION: str | None = "0.20.0"
 TABLES_TO_AGGREGATE: tuple[str, ...] = ("session.parquet", "sites.parquet")
 SESSION_TABLE = "session.parquet"
 SOURCE_LOCATION_COLUMN = "source_s3_location"
