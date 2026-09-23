@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from aind_data_access_api.document_db import MetadataDbClient
 from packaging.version import InvalidVersion, Version
+
+logger = logging.getLogger(__name__)
 
 DOCDB_HOST = "api.allenneuraldynamics.org"
 DOCDB_DATABASE = "metadata_index"
@@ -83,6 +86,44 @@ def _manifest_sessions(manifest_path: Path) -> list[str]:
     return sessions
 
 
+def _qualifying_packaging_versions(
+    client: MetadataDbClient,
+    base_filter: dict,
+    minimum: Version | None,
+    maximum: Version | None,
+) -> list[str]:
+    """Return the distinct packaging versions matching ``base_filter`` and bounds.
+
+    A cheap ``$unwind``/``$group`` pass over the matching documents' packaging
+    versions, used to narrow the main query to an explicit ``$in`` list before
+    the expensive per-document array scan.
+    """
+    pipeline = [
+        {"$match": base_filter},
+        {"$unwind": "$processing.data_processes"},
+        {"$match": {"processing.data_processes.name": PACKAGING_PROCESS_NAME}},
+        {
+            "$group": {
+                "_id": "$processing.data_processes.output_parameters.packaging_version"
+            }
+        },
+    ]
+    distinct_versions = [
+        record["_id"]
+        for record in client.aggregate_docdb_records(pipeline=pipeline)
+        if record.get("_id")
+    ]
+    qualifying: list[str] = []
+    for value in distinct_versions:
+        parsed = _parse_version(value, context="DocDB packaging_version")
+        if (minimum is not None and parsed < minimum) or (
+            maximum is not None and parsed > maximum
+        ):
+            continue
+        qualifying.append(value)
+    return qualifying
+
+
 def query_derived_assets_by_packaging_version(
     min_version: str | None = None,
     max_version: str | None = None,
@@ -140,6 +181,16 @@ def query_derived_assets_by_packaging_version(
             version=version,
         )
 
+    if not requested_sessions and (minimum is not None or maximum is not None):
+        qualifying_versions = _qualifying_packaging_versions(
+            client, filter_query, minimum, maximum
+        )
+        if not qualifying_versions:
+            return []
+        filter_query["processing.data_processes"]["$elemMatch"][
+            "output_parameters.packaging_version"
+        ] = {"$in": qualifying_versions}
+
     # ``retrieve_docdb_records`` puts its filter in a GET query string. A
     # manifest-sized ``$in`` list exceeds API-gateway URL limits, so use the
     # aggregate endpoint's POST body for the one bulk manifest query.
@@ -148,6 +199,11 @@ def query_derived_assets_by_packaging_version(
             pipeline=[{"$match": filter_query}, {"$project": projection}]
         )
     else:
+        logger.info(
+            "Querying DocDB for all matching derived VR-foraging assets; "
+            "processing.data_processes is not indexed, so this scan "
+            "typically takes a few minutes regardless of version bounds"
+        )
         records = client.retrieve_docdb_records(
             filter_query=filter_query,
             projection=projection,
