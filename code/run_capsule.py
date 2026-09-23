@@ -236,6 +236,15 @@ def _selection_version_bounds(selection_mode: str) -> dict[str, str | None]:
     raise ValueError(f"Unknown selection mode: {selection_mode!r}")
 
 
+def _parse_bool(value: str) -> bool:
+    """Parse the true/false values passed by the Code Ocean App Panel."""
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected 'true' or 'false'")
+
+
 def _git_output(*arguments: str) -> str | None:
     """Run a Git command at the repository root, if Git metadata is present."""
     try:
@@ -298,6 +307,7 @@ def _write_processing_metadata(
     outputs: dict[str, Path],
     selection_mode: str,
     manifest_path: Path | None,
+    dry_run: bool,
 ) -> Path:
     """Write the run provenance as a schema-validated processing.json."""
     repository = _repository_metadata()
@@ -318,6 +328,7 @@ def _write_processing_metadata(
         "parameters": {
             "packaging_version_bounds": _selection_version_bounds(selection_mode),
             "selection_mode": selection_mode,
+            "dry_run": dry_run,
             "repository": repository,
         },
     }
@@ -330,6 +341,15 @@ def _write_processing_metadata(
             "source_path": str(manifest_path),
             "copied_output_path": manifest_path.name,
         }
+    notes = (
+        "Each input source_data value was validated as a one-to-one match "
+        "with the VR-paper manifest before aggregation."
+        if selection_mode == "manifest"
+        else "Assets were selected by packaging version and creation time, with "
+        "each raw source_data value used by at most one processed asset."
+    )
+    if dry_run:
+        notes += " This was a metadata-only dry run."
 
     process = DataProcess(
         process_type=ProcessName.ANALYSIS,
@@ -341,13 +361,7 @@ def _write_processing_metadata(
         end_date_time=completed_at,
         output_path=".",
         output_parameters={"outputs": output_entries},
-        notes=(
-            "Each input source_data value was validated as a one-to-one match "
-            "with the VR-paper manifest before aggregation."
-            if selection_mode == "manifest"
-            else "Assets were selected by packaging version and creation time, with "
-            "each raw source_data value used by at most one processed asset."
-        ),
+        notes=notes,
     )
     processing = Processing(data_processes=[process])
     processing.write_standard_file(output_directory=output_dir)
@@ -368,8 +382,20 @@ def _write_data_description(
     s3_locations: list[str],
     source_data_description: DataDescription,
     selection_mode: str,
+    dry_run: bool,
 ) -> Path:
     """Write derived-data metadata for the multi-input aggregate."""
+    data_summary = (
+        "Aggregate of session and site tables from VR foraging primary-data "
+        "assets selected from the VR-paper manifest."
+        if selection_mode == "manifest"
+        else "Aggregate of session and site tables from all available VR-foraging "
+        "packaging outputs."
+    )
+    if dry_run:
+        data_summary = (
+            "Metadata-only dry run for selected VR-foraging primary-data assets."
+        )
     data_description = DataDescription(
         name=build_data_name("vr-foraging-primary-data-aggregate", creation_time),
         creation_time=creation_time,
@@ -382,12 +408,7 @@ def _write_data_description(
         license=source_data_description.license,
         tags=source_data_description.tags,
         source_data=[location.rsplit("/", maxsplit=1)[-1] for location in s3_locations],
-        data_summary=(
-            "Aggregate of session and site tables from VR foraging primary-data "
-            "assets selected from the VR-paper manifest."
-            if selection_mode == "manifest"
-            else "assets selected from all available VR-foraging packaging outputs."
-        ),
+        data_summary=data_summary,
     )
     data_description.write_standard_file(output_directory=output_dir)
     return output_dir / "data_description.json"
@@ -408,6 +429,14 @@ def _parse_arguments() -> argparse.Namespace:
         default=DEFAULT_MANIFEST_PATH,
         help="CSV containing the target session column for manifest mode.",
     )
+    parser.add_argument(
+        "--dry-run",
+        nargs="?",
+        const="true",
+        default=False,
+        type=_parse_bool,
+        help="Write metadata without reading or aggregating Parquet files (true/false).",
+    )
     return parser.parse_args()
 
 
@@ -425,7 +454,9 @@ def run() -> None:
         arguments.manifest_path,
     )
     source_data_description = _read_source_data_description(s3_locations)
-    outputs = aggregate(s3_locations)
+    outputs = {} if arguments.dry_run else aggregate(s3_locations)
+    if arguments.dry_run:
+        logger.info("Dry run: skipped Parquet aggregation")
     if manifest_path is not None:
         outputs[manifest_path.name] = _copy_input_manifest(manifest_path, RESULTS_DIR)
     completed_at = datetime.now(UTC)
@@ -435,6 +466,7 @@ def run() -> None:
         s3_locations=s3_locations,
         source_data_description=source_data_description,
         selection_mode=arguments.selection_mode,
+        dry_run=arguments.dry_run,
     )
     processing_path = _write_processing_metadata(
         output_dir=RESULTS_DIR,
@@ -445,6 +477,7 @@ def run() -> None:
         outputs=outputs,
         selection_mode=arguments.selection_mode,
         manifest_path=manifest_path,
+        dry_run=arguments.dry_run,
     )
     logger.info("Wrote processing metadata to %s", processing_path)
 

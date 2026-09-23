@@ -8,9 +8,14 @@ named App Panel parameters in Code Ocean:
 ```text
 --selection-mode manifest --manifest-path /data/target.csv
 --selection-mode all
+--selection-mode all --dry-run
 ```
 
 `manifest` is the default and validates the CSV's `session` column against the
 selected raw assets. `all` does not use a CSV. It selects the highest packaging
 version available for each raw asset, resolving version ties by the newest
 creation time.
+
+Add `--dry-run` to write only metadata. It skips Parquet reads and produces
+`data_description.json` and `processing.json` (plus the input CSV in manifest
+mode).
