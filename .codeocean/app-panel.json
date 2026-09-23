@@ -20,6 +20,16 @@
 			"name": "Target CSV",
 			"param_name": "manifest-path",
 			"type": "file"
+		},
+		{
+			"id": "tpHpqdUXhf28EF2s",
+			"name": "Is Dry Run",
+			"param_name": "dry-run",
+			"type": "list",
+			"value_type": "boolean",
+			"default_value": "False",
+			"required": true,
+			"extra_data": []
 		}
 	]
 }
