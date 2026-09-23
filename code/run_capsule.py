@@ -1,5 +1,6 @@
 """Aggregate common Parquet assets from multiple S3 locations."""
 
+import argparse
 import hashlib
 import logging
 import os
@@ -27,7 +28,11 @@ from aind_data_schema.core.processing import (
     ProcessName,
     ProcessStage,
 )
-from docdb_queries import DEFAULT_MANIFEST_PATH, query_manifest_derived_assets
+from docdb_queries import (
+    DEFAULT_MANIFEST_PATH,
+    query_latest_derived_assets_per_source_data,
+    query_manifest_derived_assets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,12 +186,21 @@ def aggregate(
     return outputs
 
 
-def _selected_s3_locations() -> list[str]:
-    """Get the validated, latest derived-asset locations from DocDB."""
-    selected_assets = query_manifest_derived_assets(
-        min_version=MIN_PACKAGING_VERSION,
-        max_version=MAX_PACKAGING_VERSION,
-    )
+def _selected_s3_locations(
+    selection_mode: str,
+    manifest_path: Path = DEFAULT_MANIFEST_PATH,
+) -> list[str]:
+    """Get selected derived-asset locations from DocDB."""
+    if selection_mode == "manifest":
+        selected_assets = query_manifest_derived_assets(
+            manifest_path=manifest_path,
+            min_version=MIN_PACKAGING_VERSION,
+            max_version=MAX_PACKAGING_VERSION,
+        )
+    elif selection_mode == "all":
+        selected_assets = query_latest_derived_assets_per_source_data()
+    else:
+        raise ValueError(f"Unknown selection mode: {selection_mode!r}")
 
     locations: list[str] = []
     assets_by_location: dict[str, str] = {}
@@ -206,9 +220,20 @@ def _selected_s3_locations() -> list[str]:
         locations.append(location)
 
     logger.info(
-        "Selected %d manifest-validated S3 locations from DocDB", len(locations)
+        "Selected %d S3 locations from DocDB using %s mode",
+        len(locations),
+        selection_mode,
     )
     return locations
+
+
+def _selection_version_bounds(selection_mode: str) -> dict[str, str | None]:
+    """Return the packaging-version bounds applied by the selection mode."""
+    if selection_mode == "manifest":
+        return {"minimum": MIN_PACKAGING_VERSION, "maximum": MAX_PACKAGING_VERSION}
+    if selection_mode == "all":
+        return {"minimum": None, "maximum": None}
+    raise ValueError(f"Unknown selection mode: {selection_mode!r}")
 
 
 def _git_output(*arguments: str) -> str | None:
@@ -271,6 +296,8 @@ def _write_processing_metadata(
     maintainers: list[str],
     s3_locations: list[str],
     outputs: dict[str, Path],
+    selection_mode: str,
+    manifest_path: Path | None,
 ) -> Path:
     """Write the run provenance as a schema-validated processing.json."""
     repository = _repository_metadata()
@@ -289,14 +316,8 @@ def _write_processing_metadata(
         "language_version": f"{sys.version_info.major}.{sys.version_info.minor}",
         "input_data": input_assets,
         "parameters": {
-            "packaging_version_bounds": {
-                "minimum": MIN_PACKAGING_VERSION,
-                "maximum": MAX_PACKAGING_VERSION,
-            },
-            "input_manifest": {
-                "source_path": str(DEFAULT_MANIFEST_PATH),
-                "copied_output_path": DEFAULT_MANIFEST_PATH.name,
-            },
+            "packaging_version_bounds": _selection_version_bounds(selection_mode),
+            "selection_mode": selection_mode,
             "repository": repository,
         },
     }
@@ -304,6 +325,11 @@ def _write_processing_metadata(
     # field in that case: the schema permits an unknown hash, but not "none".
     if isinstance(repository["commit"], str):
         code_fields["commit_hash"] = repository["commit"]
+    if manifest_path is not None:
+        code_fields["parameters"]["input_manifest"] = {
+            "source_path": str(manifest_path),
+            "copied_output_path": manifest_path.name,
+        }
 
     process = DataProcess(
         process_type=ProcessName.ANALYSIS,
@@ -318,6 +344,9 @@ def _write_processing_metadata(
         notes=(
             "Each input source_data value was validated as a one-to-one match "
             "with the VR-paper manifest before aggregation."
+            if selection_mode == "manifest"
+            else "Assets were selected by packaging version and creation time, with "
+            "each raw source_data value used by at most one processed asset."
         ),
     )
     processing = Processing(data_processes=[process])
@@ -325,10 +354,10 @@ def _write_processing_metadata(
     return output_dir / "processing.json"
 
 
-def _copy_input_manifest(output_dir: Path) -> Path:
+def _copy_input_manifest(manifest_path: Path, output_dir: Path) -> Path:
     """Copy the exact CSV used for DocDB selection into the output directory."""
-    destination = output_dir / DEFAULT_MANIFEST_PATH.name
-    shutil.copy2(DEFAULT_MANIFEST_PATH, destination)
+    destination = output_dir / manifest_path.name
+    shutil.copy2(manifest_path, destination)
     return destination
 
 
@@ -338,6 +367,7 @@ def _write_data_description(
     creation_time: datetime,
     s3_locations: list[str],
     source_data_description: DataDescription,
+    selection_mode: str,
 ) -> Path:
     """Write derived-data metadata for the multi-input aggregate."""
     data_description = DataDescription(
@@ -355,10 +385,30 @@ def _write_data_description(
         data_summary=(
             "Aggregate of session and site tables from VR foraging primary-data "
             "assets selected from the VR-paper manifest."
+            if selection_mode == "manifest"
+            else "assets selected from all available VR-foraging packaging outputs."
         ),
     )
     data_description.write_standard_file(output_directory=output_dir)
     return output_dir / "data_description.json"
+
+
+def _parse_arguments() -> argparse.Namespace:
+    """Parse Code Ocean App Panel or local command-line parameters."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--selection-mode",
+        choices=("manifest", "all"),
+        default="manifest",
+        help="Use a target CSV manifest or all available assets.",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        type=Path,
+        default=DEFAULT_MANIFEST_PATH,
+        help="CSV containing the target session column for manifest mode.",
+    )
+    return parser.parse_args()
 
 
 def run() -> None:
@@ -366,16 +416,25 @@ def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     started_at = datetime.now(UTC)
     maintainers = sample(MAINTAINERS, k=len(MAINTAINERS))
-    s3_locations = _selected_s3_locations()
+    arguments = _parse_arguments()
+    manifest_path = (
+        arguments.manifest_path if arguments.selection_mode == "manifest" else None
+    )
+    s3_locations = _selected_s3_locations(
+        arguments.selection_mode,
+        arguments.manifest_path,
+    )
     source_data_description = _read_source_data_description(s3_locations)
     outputs = aggregate(s3_locations)
-    outputs[DEFAULT_MANIFEST_PATH.name] = _copy_input_manifest(RESULTS_DIR)
+    if manifest_path is not None:
+        outputs[manifest_path.name] = _copy_input_manifest(manifest_path, RESULTS_DIR)
     completed_at = datetime.now(UTC)
     outputs["data_description.json"] = _write_data_description(
         output_dir=RESULTS_DIR,
         creation_time=completed_at,
         s3_locations=s3_locations,
         source_data_description=source_data_description,
+        selection_mode=arguments.selection_mode,
     )
     processing_path = _write_processing_metadata(
         output_dir=RESULTS_DIR,
@@ -384,6 +443,8 @@ def run() -> None:
         maintainers=maintainers,
         s3_locations=s3_locations,
         outputs=outputs,
+        selection_mode=arguments.selection_mode,
+        manifest_path=manifest_path,
     )
     logger.info("Wrote processing metadata to %s", processing_path)
 

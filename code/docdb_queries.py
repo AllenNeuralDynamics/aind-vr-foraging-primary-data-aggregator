@@ -251,3 +251,31 @@ def query_manifest_derived_assets(
 
     result_by_session = {result["session_names"][0]: result for result in results}
     return [result_by_session[session] for session in manifest_sessions]
+
+
+def query_latest_derived_assets_per_source_data(
+    min_version: str | None = None,
+    max_version: str | None = None,
+    client: MetadataDbClient | None = None,
+) -> list[dict]:
+    """Select one latest derived asset for each raw source-data value.
+
+    Assets are ranked by packaging version and then creation time. A selected
+    asset claims every value in its ``source_data`` list, so older candidates
+    with an overlapping raw input are skipped instead of causing a failure.
+    """
+    candidates = query_derived_assets_by_packaging_version(
+        min_version=min_version,
+        max_version=max_version,
+        latest_per_source_session=False,
+        client=client,
+    )
+    selected: list[dict] = []
+    selected_source_data: set[str] = set()
+    for candidate in candidates:
+        source_data = set(candidate["session_names"])
+        if source_data & selected_source_data:
+            continue
+        selected.append(candidate)
+        selected_source_data.update(source_data)
+    return selected
