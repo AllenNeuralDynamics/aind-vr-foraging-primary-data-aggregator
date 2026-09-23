@@ -34,6 +34,7 @@ from docdb_queries import (
     query_latest_derived_assets_per_source_data,
     query_manifest_derived_assets,
 )
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +156,16 @@ def aggregate(
         logger.info("Reading %s from %d S3 locations", asset_name, len(s3_locations))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             source_tables = list(
-                executor.map(
-                    lambda location, asset_name=asset_name: _read_asset(
-                        filesystem, location, asset_name
+                tqdm(
+                    executor.map(
+                        lambda location, asset_name=asset_name: _read_asset(
+                            filesystem, location, asset_name
+                        ),
+                        s3_locations,
                     ),
-                    s3_locations,
+                    total=len(s3_locations),
+                    desc=f"Reading {asset_name}",
+                    file=sys.stdout,
                 )
             )
 
