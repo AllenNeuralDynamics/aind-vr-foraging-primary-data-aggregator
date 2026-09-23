@@ -60,7 +60,7 @@ data = [
 
 [[package]]
 name = "aind-behavior-vr-foraging-packaging"
-version = "0.0.19"
+version = "0.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-behavior-curriculum" },
@@ -75,9 +75,9 @@ dependencies = [
     { name = "pynwb" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/76/4c902a26be4297e37f179fb44cf0a132ab865d5f436b5b1d82eba021b53a/aind_behavior_vr_foraging_packaging-0.0.19.tar.gz", hash = "sha256:0c9354d4974415fbe7f2e8a2717d3c90e5aa7f5876ef67eb2aee06a920088dfa", size = 337556, upload-time = "2026-09-10T02:49:53.224Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/c2/6b82489f4b0984b0f12664ab29cb7c7b0e3cf275f6bf32de3b715be221ae/aind_behavior_vr_foraging_packaging-0.21.0.tar.gz", hash = "sha256:73a80805860c79360554d7be0974a852acc0454fe445211967c8e05d6064e3e1", size = 339496, upload-time = "2026-09-17T23:57:24.635Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/b0/c445e30fcd1c25ff898a26cac79ee500732c0036040a94f33bcf3bc7105b/aind_behavior_vr_foraging_packaging-0.0.19-py3-none-any.whl", hash = "sha256:7c2902c871562f92340230d1726fe7b79f4cb473bda50011b3d3c19368b8bcfa", size = 57793, upload-time = "2026-09-10T02:49:52.092Z" },
+    { url = "https://files.pythonhosted.org/packages/38/a9/66c39f0ed0e9ce5a307b020f2a5435887b00ace753d5e5bab62aa5e39e34/aind_behavior_vr_foraging_packaging-0.21.0-py3-none-any.whl", hash = "sha256:694f19dbbf660f585d24342869970229c611bb02ea5c926a5c77bb7f842f5812", size = 58125, upload-time = "2026-09-17T23:57:23.285Z" },
 ]
 
 [[package]]
@@ -156,7 +156,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aind-behavior-vr-foraging-packaging", specifier = "==0.0.19" },
+    { name = "aind-behavior-vr-foraging-packaging", specifier = "==0.21.0" },
     { name = "aind-data-access-api", specifier = ">=1.10.0" },
     { name = "aind-data-schema", specifier = ">=2.9.0" },
     { name = "packaging", specifier = ">=26.3" },
