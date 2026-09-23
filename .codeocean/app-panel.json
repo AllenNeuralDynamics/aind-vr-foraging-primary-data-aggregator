@@ -1,0 +1,25 @@
+{
+	"version": 1,
+	"named_parameters": true,
+	"parameters": [
+		{
+			"id": "bmnUtPwWjYHdEsrR",
+			"name": "Selection mode",
+			"param_name": "selection-mode",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "manifest",
+			"required": true,
+			"extra_data": [
+				"manifest",
+				"all"
+			]
+		},
+		{
+			"id": "1M6PuS0SKy6lAgon",
+			"name": "Target CSV",
+			"param_name": "manifest-path",
+			"type": "file"
+		}
+	]
+}
