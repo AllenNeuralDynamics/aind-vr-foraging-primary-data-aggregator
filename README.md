@@ -9,6 +9,7 @@ named App Panel parameters in Code Ocean:
 --selection-mode manifest --manifest-path /data/target.csv
 --selection-mode all
 --selection-mode all --dry-run
+--selection-mode all --min-packaging-version 0.20.0 --max-packaging-version 0.21.0
 ```
 
 `manifest` is the default and validates the CSV's `session` column against the
@@ -19,3 +20,6 @@ creation time.
 Add `--dry-run` to write only metadata. It skips Parquet reads and produces
 `data_description.json` and `processing.json` (plus the input CSV in manifest
 mode).
+
+The packaging-version fields are optional inclusive bounds. When left blank,
+both modes are unbounded.

@@ -13,6 +13,7 @@ from pathlib import Path
 from random import sample
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import s3fs
 from aind_data_schema.core.data_description import (
@@ -36,9 +37,6 @@ from docdb_queries import (
 
 logger = logging.getLogger(__name__)
 
-# Set either bound to restrict which packaging versions may be selected.
-MIN_PACKAGING_VERSION: str | None = "0.20.0"
-MAX_PACKAGING_VERSION: str | None = "0.20.0"
 TABLES_TO_AGGREGATE: tuple[str, ...] = ("session.parquet", "sites.parquet")
 SESSION_TABLE = "session.parquet"
 SOURCE_LOCATION_COLUMN = "source_s3_location"
@@ -60,6 +58,23 @@ def _s3_asset_path(s3_location: str, asset_name: str) -> str:
     return f"{s3_location.rstrip('/')}/{asset_name}"
 
 
+def _normalize_date_timezone(table: pa.Table) -> pa.Table:
+    """Represent timestamp values in a top-level ``date`` column as UTC."""
+    column_index = table.schema.get_field_index("date")
+    if column_index == -1:
+        return table
+
+    column = table.column(column_index)
+    if not pa.types.is_timestamp(column.type):
+        return table
+
+    utc_type = pa.timestamp("us", tz="UTC")
+    if column.type.tz is None:
+        column = pc.assume_timezone(column, timezone="UTC")
+    column = pc.cast(column, utc_type)
+    return table.set_column(column_index, "date", column)
+
+
 def _read_asset(
     filesystem: s3fs.S3FileSystem,
     s3_location: str,
@@ -72,6 +87,8 @@ def _read_asset(
             table = pq.read_table(source)
     except FileNotFoundError as error:
         raise FileNotFoundError(f"Expected {asset_name} at {s3_path}") from error
+
+    table = _normalize_date_timezone(table)
 
     if asset_name == SESSION_TABLE:
         if SOURCE_LOCATION_COLUMN in table.column_names:
@@ -189,16 +206,21 @@ def aggregate(
 def _selected_s3_locations(
     selection_mode: str,
     manifest_path: Path = DEFAULT_MANIFEST_PATH,
+    min_version: str | None = None,
+    max_version: str | None = None,
 ) -> list[str]:
     """Get selected derived-asset locations from DocDB."""
     if selection_mode == "manifest":
         selected_assets = query_manifest_derived_assets(
             manifest_path=manifest_path,
-            min_version=MIN_PACKAGING_VERSION,
-            max_version=MAX_PACKAGING_VERSION,
+            min_version=min_version,
+            max_version=max_version,
         )
     elif selection_mode == "all":
-        selected_assets = query_latest_derived_assets_per_source_data()
+        selected_assets = query_latest_derived_assets_per_source_data(
+            min_version=min_version,
+            max_version=max_version,
+        )
     else:
         raise ValueError(f"Unknown selection mode: {selection_mode!r}")
 
@@ -227,13 +249,15 @@ def _selected_s3_locations(
     return locations
 
 
-def _selection_version_bounds(selection_mode: str) -> dict[str, str | None]:
+def _selection_version_bounds(
+    selection_mode: str,
+    min_version: str | None,
+    max_version: str | None,
+) -> dict[str, str | None]:
     """Return the packaging-version bounds applied by the selection mode."""
-    if selection_mode == "manifest":
-        return {"minimum": MIN_PACKAGING_VERSION, "maximum": MAX_PACKAGING_VERSION}
-    if selection_mode == "all":
-        return {"minimum": None, "maximum": None}
-    raise ValueError(f"Unknown selection mode: {selection_mode!r}")
+    if selection_mode not in {"manifest", "all"}:
+        raise ValueError(f"Unknown selection mode: {selection_mode!r}")
+    return {"minimum": min_version, "maximum": max_version}
 
 
 def _parse_bool(value: str) -> bool:
@@ -306,6 +330,7 @@ def _write_processing_metadata(
     s3_locations: list[str],
     outputs: dict[str, Path],
     selection_mode: str,
+    packaging_version_bounds: dict[str, str | None],
     manifest_path: Path | None,
     dry_run: bool,
 ) -> Path:
@@ -326,7 +351,7 @@ def _write_processing_metadata(
         "language_version": f"{sys.version_info.major}.{sys.version_info.minor}",
         "input_data": input_assets,
         "parameters": {
-            "packaging_version_bounds": _selection_version_bounds(selection_mode),
+            "packaging_version_bounds": packaging_version_bounds,
             "selection_mode": selection_mode,
             "dry_run": dry_run,
             "repository": repository,
@@ -430,6 +455,14 @@ def _parse_arguments() -> argparse.Namespace:
         help="CSV containing the target session column for manifest mode.",
     )
     parser.add_argument(
+        "--min-packaging-version",
+        help="Inclusive minimum packaging version; leave blank for no lower bound.",
+    )
+    parser.add_argument(
+        "--max-packaging-version",
+        help="Inclusive maximum packaging version; leave blank for no upper bound.",
+    )
+    parser.add_argument(
         "--dry-run",
         nargs="?",
         const="true",
@@ -449,9 +482,16 @@ def run() -> None:
     manifest_path = (
         arguments.manifest_path if arguments.selection_mode == "manifest" else None
     )
+    packaging_version_bounds = _selection_version_bounds(
+        arguments.selection_mode,
+        arguments.min_packaging_version or None,
+        arguments.max_packaging_version or None,
+    )
     s3_locations = _selected_s3_locations(
         arguments.selection_mode,
         arguments.manifest_path,
+        packaging_version_bounds["minimum"],
+        packaging_version_bounds["maximum"],
     )
     source_data_description = _read_source_data_description(s3_locations)
     outputs = {} if arguments.dry_run else aggregate(s3_locations)
@@ -476,6 +516,7 @@ def run() -> None:
         s3_locations=s3_locations,
         outputs=outputs,
         selection_mode=arguments.selection_mode,
+        packaging_version_bounds=packaging_version_bounds,
         manifest_path=manifest_path,
         dry_run=arguments.dry_run,
     )

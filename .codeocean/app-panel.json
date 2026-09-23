@@ -22,6 +22,24 @@
 			"type": "file"
 		},
 		{
+			"id": "q8Lm3Pz1VwYk6sHr",
+			"name": "Minimum packaging version",
+			"param_name": "min-packaging-version",
+			"type": "input",
+			"value_type": "string",
+			"default_value": "0.20.0",
+			"required": false
+		},
+		{
+			"id": "n4Tx7Cb2JrWd9mQa",
+			"name": "Maximum packaging version",
+			"param_name": "max-packaging-version",
+			"type": "input",
+			"value_type": "string",
+			"default_value": "0.22.0",
+			"required": false
+		},
+		{
 			"id": "tpHpqdUXhf28EF2s",
 			"name": "Is Dry Run",
 			"param_name": "dry-run",
