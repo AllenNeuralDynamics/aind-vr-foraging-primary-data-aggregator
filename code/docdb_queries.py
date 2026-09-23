@@ -191,23 +191,16 @@ def query_derived_assets_by_packaging_version(
             "output_parameters.packaging_version"
         ] = {"$in": qualifying_versions}
 
-    # ``retrieve_docdb_records`` puts its filter in a GET query string. A
-    # manifest-sized ``$in`` list exceeds API-gateway URL limits, so use the
-    # aggregate endpoint's POST body for the one bulk manifest query.
-    if requested_sessions:
-        records = client.aggregate_docdb_records(
-            pipeline=[{"$match": filter_query}, {"$project": projection}]
-        )
-    else:
-        logger.info(
-            "Querying DocDB for all matching derived VR-foraging assets; "
-            "processing.data_processes is not indexed, so this scan "
-            "typically takes a few minutes regardless of version bounds"
-        )
-        records = client.retrieve_docdb_records(
-            filter_query=filter_query,
-            projection=projection,
-        )
+    # ``retrieve_docdb_records`` (``find``) hung for minutes -- or longer --
+    # on this collection once it grew past ~4k matching documents, and its
+    # own docstring admits it can silently truncate results that exceed the
+    # API Gateway payload limit. ``aggregate_docdb_records`` (``aggregate``)
+    # returns the same filter's matches in ~15s, so use it unconditionally.
+    if not requested_sessions:
+        logger.info("Querying DocDB for all matching derived VR-foraging assets")
+    records = client.aggregate_docdb_records(
+        pipeline=[{"$match": filter_query}, {"$project": projection}]
+    )
 
     results: list[dict] = []
     for record in records:
