@@ -43,12 +43,17 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
 
-# aind_behavior_vr_foraging.task_logic logs one WARNING per legacy field it
-# silently upgrades (e.g. increment -> on_success) while schema migration
-# deserializes a historical document. Every legacy row triggers several of
-# these; they are expected noise from a working compatibility shim, not
-# something an aggregation run can act on.
-logging.getLogger("aind_behavior_vr_foraging.task_logic").setLevel(logging.ERROR)
+# These upstream loggers fire on every legacy field or sub-model that schema
+# migration coerces to the current version while deserializing a historical
+# document -- aind_behavior_services.base's SchemaVersionedModel validator in
+# particular logs once per outdated versioned sub-component, so a single
+# document can trigger dozens of these. They are expected noise from a
+# working compatibility shim, not something an aggregation run can act on.
+for _noisy_logger_name in (
+    "aind_behavior_vr_foraging.task_logic",
+    "aind_behavior_services.base",
+):
+    logging.getLogger(_noisy_logger_name).setLevel(logging.ERROR)
 
 TABLES_TO_AGGREGATE: tuple[str, ...] = ("session.parquet", "sites.parquet")
 SESSION_TABLE = "session.parquet"
