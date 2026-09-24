@@ -16,6 +16,10 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import s3fs
+from aind_behavior_vr_foraging_packaging.schema_migrations import (
+    SchemaMigrationMode,
+    append_migrated_schema_columns,
+)
 from aind_data_schema.core.data_description import (
     DataDescription,
     DataLevel,
@@ -80,6 +84,7 @@ def _read_asset(
     filesystem: s3fs.S3FileSystem,
     s3_location: str,
     asset_name: str,
+    schema_migration_mode: SchemaMigrationMode = SchemaMigrationMode.FILL_MISSING,
 ) -> pa.Table:
     """Read one expected Parquet asset and add source provenance when needed."""
     s3_path = _s3_asset_path(s3_location, asset_name)
@@ -92,6 +97,10 @@ def _read_asset(
     table = _normalize_date_timezone(table)
 
     if asset_name == SESSION_TABLE:
+        table = append_migrated_schema_columns(
+            table,
+            mode=schema_migration_mode,
+        )
         if SOURCE_LOCATION_COLUMN in table.column_names:
             raise ValueError(
                 f"{s3_path} already contains the reserved {SOURCE_LOCATION_COLUMN!r} column"
@@ -124,6 +133,7 @@ def aggregate(
     output_dir: Path = RESULTS_DIR,
     tables: tuple[str, ...] = TABLES_TO_AGGREGATE,
     max_workers: int = 32,
+    schema_migration_mode: SchemaMigrationMode = SchemaMigrationMode.FILL_MISSING,
 ) -> dict[str, Path]:
     """Aggregate the same Parquet assets from every S3 location.
 
@@ -159,7 +169,10 @@ def aggregate(
                 tqdm(
                     executor.map(
                         lambda location, asset_name=asset_name: _read_asset(
-                            filesystem, location, asset_name
+                            filesystem,
+                            location,
+                            asset_name,
+                            schema_migration_mode,
                         ),
                         s3_locations,
                     ),
@@ -476,6 +489,13 @@ def _parse_arguments() -> argparse.Namespace:
         type=_parse_bool,
         help="Write metadata without reading or aggregating Parquet files (true/false).",
     )
+    parser.add_argument(
+        "--schema-migration-mode",
+        choices=tuple(SchemaMigrationMode),
+        default=SchemaMigrationMode.FILL_MISSING,
+        type=SchemaMigrationMode,
+        help="Choose disabled, fill-missing, or force handling for migrated schemas.",
+    )
     return parser.parse_args()
 
 
@@ -500,7 +520,14 @@ def run() -> None:
         packaging_version_bounds["maximum"],
     )
     source_data_description = _read_source_data_description(s3_locations)
-    outputs = {} if arguments.dry_run else aggregate(s3_locations)
+    outputs = (
+        {}
+        if arguments.dry_run
+        else aggregate(
+            s3_locations,
+            schema_migration_mode=arguments.schema_migration_mode,
+        )
+    )
     if arguments.dry_run:
         logger.info("Dry run: skipped Parquet aggregation")
     if manifest_path is not None:

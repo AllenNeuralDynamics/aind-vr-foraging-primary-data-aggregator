@@ -46,6 +46,20 @@
 			"type": "text",
 			"value_type": "string",
 			"default_value": "0.22.0"
+		},
+		{
+			"id": "bLe4B04XhL6xfn8V",
+			"name": "Schema migration mode",
+			"param_name": "schema-migration-mode",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "fill-missing",
+			"required": true,
+			"extra_data": [
+				"disabled",
+				"fill-missing",
+				"force"
+			]
 		}
 	]
 }
