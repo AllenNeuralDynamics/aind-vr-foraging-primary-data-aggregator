@@ -1,0 +1,30 @@
+name: Run VR Foraging Capsule
+
+on:
+  schedule:
+    # GitHub Actions cron is UTC-only. This lands at 6am Pacific during PDT
+    # (summer) and 5am Pacific during PST (winter).
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: run-capsule
+  cancel-in-progress: false
+
+jobs:
+  run-capsule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Run capsule and publish result
+        env:
+          CODEOCEAN_TOKEN: ${{ secrets.CODEOCEAN_TOKEN }}
+        run: |
+          uv run .github/run_capsule.py \
+            --name vr-foraging-dataset \
+            --mount vr-foraging-dataset \
+            --bucket aind-scratch-data \
+            --prefix vr-foraging/vr-foraging-dataset \
+            --wait-for-asset

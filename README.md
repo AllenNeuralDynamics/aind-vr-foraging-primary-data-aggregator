@@ -23,3 +23,33 @@ mode).
 
 The packaging-version fields are optional inclusive bounds. When left blank,
 both modes are unbounded.
+
+## Scheduled runs (GitHub Actions)
+
+[.github/workflows/run-capsule.yml](.github/workflows/run-capsule.yml) runs
+this capsule on Code Ocean every day (13:00 UTC, or on demand through
+`workflow_dispatch`). It waits for the run to finish and then publishes the
+result as the `vr-foraging-dataset` data asset in
+`s3://aind-scratch-data/vr-foraging/vr-foraging-dataset`.
+
+The driver, [.github/run_capsule.py](.github/run_capsule.py), is a single-file
+[PEP 723](https://peps.python.org/pep-0723/) script, so `uv run` resolves its
+dependencies and no project setup is needed. It reads the Code Ocean API token
+from `CODEOCEAN_TOKEN` (a repository secret in CI) or from a gitignored
+`secrets/codeocean` file at the repository root when you run it locally:
+
+```bash
+uv run .github/run_capsule.py --list-app-panel-parameters   # live App Panel schema
+uv run .github/run_capsule.py --list-custom-metadata-fields # asset metadata schema
+uv run .github/run_capsule.py --skip-asset-creation          # run only, don't publish
+uv run .github/run_capsule.py \
+    --name vr-foraging-dataset --mount vr-foraging-dataset \
+    --bucket aind-scratch-data --prefix vr-foraging/vr-foraging-dataset \
+    --wait-for-asset
+```
+
+Capsule parameters are passed by their App Panel display label, which is
+resolved to the real `param_name` at runtime. If a panel field is renamed,
+update `PARAMETER_DISPLAY_NAMES` in the script. The script won't publish an
+asset unless the run succeeded, meaning a successful `end_status`, a zero
+`exit_code`, and results present.

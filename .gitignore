@@ -3,6 +3,7 @@
 /results/
 /scratch/
 /.worktrees/
+/secrets/
 metadata/metadata.yml
 
 # Byte-compiled / optimized / DLL files
