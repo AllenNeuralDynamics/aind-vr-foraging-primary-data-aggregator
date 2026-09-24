@@ -39,8 +39,16 @@ from docdb_queries import (
     query_manifest_derived_assets,
 )
 from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
+
+# aind_behavior_vr_foraging.task_logic logs one WARNING per legacy field it
+# silently upgrades (e.g. increment -> on_success) while schema migration
+# deserializes a historical document. Every legacy row triggers several of
+# these; they are expected noise from a working compatibility shim, not
+# something an aggregation run can act on.
+logging.getLogger("aind_behavior_vr_foraging.task_logic").setLevel(logging.ERROR)
 
 TABLES_TO_AGGREGATE: tuple[str, ...] = ("session.parquet", "sites.parquet")
 SESSION_TABLE = "session.parquet"
@@ -164,7 +172,7 @@ def aggregate(
             raise ValueError(f"Expected a Parquet filename, got {asset_name!r}")
 
         logger.info("Reading %s from %d S3 locations", asset_name, len(s3_locations))
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        with logging_redirect_tqdm(), ThreadPoolExecutor(max_workers=worker_count) as executor:
             source_tables = list(
                 tqdm(
                     executor.map(
