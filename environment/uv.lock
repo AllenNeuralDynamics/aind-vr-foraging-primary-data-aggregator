@@ -157,7 +157,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aind-behavior-vr-foraging-packaging", specifier = "==0.22.0" },
+    { name = "aind-behavior-vr-foraging-packaging", specifier = ">=0.22.0" },
     { name = "aind-data-access-api", specifier = ">=1.10.0" },
     { name = "aind-data-schema", specifier = ">=2.9.0" },
     { name = "packaging", specifier = ">=26.3" },
