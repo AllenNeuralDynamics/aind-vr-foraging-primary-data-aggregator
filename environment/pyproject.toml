@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "aind-behavior-vr-foraging-packaging>=0.22.0",
+    "aind-behavior-vr-foraging-packaging>=0.24.0",
     "aind-data-access-api>=1.10.0",
     "aind-data-schema>=2.9.0",
     "packaging>=26.3",
