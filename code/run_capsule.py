@@ -58,6 +58,10 @@ for _noisy_logger_name in (
 TABLES_TO_AGGREGATE: tuple[str, ...] = ("session.parquet", "sites.parquet")
 SESSION_TABLE = "session.parquet"
 SOURCE_LOCATION_COLUMN = "source_s3_location"
+# Rows per Parquet row group. Paired with sorting by session_id, this keeps each
+# row group's session_id min/max narrow, so readers filtering by session skip
+# the row groups they don't need instead of downloading most of the file.
+ROW_GROUP_SIZES: dict[str, int] = {"session.parquet": 256, "sites.parquet": 65_536}
 REPOSITORY_URL = (
     "https://github.com/AllenNeuralDynamics/aind-vr-foraging-primary-data-aggregator"
 )
@@ -211,6 +215,11 @@ def aggregate(
                 else table
                 for table, location in zip(source_tables, s3_locations, strict=True)
             ]
+        # Each source table holds a single session, so ordering the tables
+        # sorts the aggregate by session_id without copying any rows.
+        source_tables.sort(
+            key=lambda table: table["session_id"][0].as_py() if table.num_rows else ""
+        )
         aggregated[asset_name] = pa.concat_tables(
             source_tables,
             promote_options="permissive",
@@ -228,7 +237,12 @@ def aggregate(
     outputs: dict[str, Path] = {}
     for asset_name, table in aggregated.items():
         destination = output_dir / asset_name
-        pq.write_table(table, destination)
+        pq.write_table(
+            table,
+            destination,
+            row_group_size=ROW_GROUP_SIZES.get(asset_name),
+            write_statistics=True,
+        )
         outputs[asset_name] = destination
         logger.info("Wrote %s rows to %s", table.num_rows, destination)
 
