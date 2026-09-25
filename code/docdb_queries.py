@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import logging
+import random
+import time
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -11,6 +13,7 @@ from pathlib import Path
 
 from aind_data_access_api.document_db import MetadataDbClient
 from packaging.version import InvalidVersion, Version
+from requests import HTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,42 @@ DOCDB_COLLECTION = "data_assets"
 DOCDB_VERSION = "v2"
 PACKAGING_PROCESS_NAME = "primary-nwb-packaging-vr-foraging"
 DEFAULT_MANIFEST_PATH = Path(__file__).with_name("vr_paper_manifest.csv")
+AGGREGATE_MAX_ATTEMPTS = 5
+AGGREGATE_BASE_DELAY_S = 5.0
+
+
+def _is_interrupted_error(error: HTTPError) -> bool:
+    """True for the backend's time-limit kill, surfaced by the API as a 400.
+
+    Under load DocDB aborts long aggregations with ``MongoServerError:
+    operation was interrupted``; the request itself is valid, so it is safe
+    to retry. Any other 400 is a genuine client error and must propagate.
+    """
+    response = error.response
+    return (
+        response is not None
+        and response.status_code == 400
+        and "operation was interrupted" in response.text
+    )
+
+
+def _aggregate_with_retry(client: MetadataDbClient, pipeline: list[dict]) -> list:
+    """Run ``aggregate_docdb_records``, retrying transient interruptions."""
+    for attempt in range(1, AGGREGATE_MAX_ATTEMPTS + 1):
+        try:
+            return client.aggregate_docdb_records(pipeline=pipeline)
+        except HTTPError as error:
+            if attempt == AGGREGATE_MAX_ATTEMPTS or not _is_interrupted_error(error):
+                raise
+            delay = AGGREGATE_BASE_DELAY_S * 2 ** (attempt - 1) * random.uniform(1, 1.5)
+            logger.warning(
+                "DocDB aggregate interrupted (attempt %d/%d); retrying in %.0fs",
+                attempt,
+                AGGREGATE_MAX_ATTEMPTS,
+                delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def _creation_time(record: dict) -> datetime:
@@ -110,7 +149,7 @@ def _qualifying_packaging_versions(
     ]
     distinct_versions = [
         record["_id"]
-        for record in client.aggregate_docdb_records(pipeline=pipeline)
+        for record in _aggregate_with_retry(client, pipeline)
         if record.get("_id")
     ]
     qualifying: list[str] = []
@@ -198,8 +237,8 @@ def query_derived_assets_by_packaging_version(
     # returns the same filter's matches in ~15s, so use it unconditionally.
     if not requested_sessions:
         logger.info("Querying DocDB for all matching derived VR-foraging assets")
-    records = client.aggregate_docdb_records(
-        pipeline=[{"$match": filter_query}, {"$project": projection}]
+    records = _aggregate_with_retry(
+        client, [{"$match": filter_query}, {"$project": projection}]
     )
 
     results: list[dict] = []
