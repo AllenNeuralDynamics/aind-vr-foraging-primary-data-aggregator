@@ -25,7 +25,7 @@ PACKAGING_PROCESS_NAME = "primary-nwb-packaging-vr-foraging"
 DEFAULT_MANIFEST_PATH = Path(__file__).with_name("vr_paper_manifest.csv")
 AGGREGATE_MAX_ATTEMPTS = 5
 AGGREGATE_BASE_DELAY_S = 5.0
-RAW_LOOKUP_BATCH_SIZE = 200
+RAW_LOOKUP_BATCH_SIZE = 1000
 
 
 def _is_interrupted_error(error: HTTPError) -> bool:
