@@ -17,6 +17,11 @@ selected raw assets. `all` does not use a CSV. It selects the highest packaging
 version available for each raw asset, resolving version ties by the newest
 creation time.
 
+Each row of `session.parquet` carries two provenance columns:
+`source_s3_location` (the processed asset) and `raw_s3_location` (the raw asset
+it was derived from, resolved from DocDB by the name in `source_data`; null if
+DocDB has no single matching raw record).
+
 Add `--dry-run` to write only metadata. It skips Parquet reads and produces
 `data_description.json` and `processing.json` (plus the input CSV in manifest
 mode).
