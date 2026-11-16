@@ -25,6 +25,7 @@ PACKAGING_PROCESS_NAME = "primary-nwb-packaging-vr-foraging"
 DEFAULT_MANIFEST_PATH = Path(__file__).with_name("vr_paper_manifest.csv")
 AGGREGATE_MAX_ATTEMPTS = 5
 AGGREGATE_BASE_DELAY_S = 5.0
+RAW_LOOKUP_BATCH_SIZE = 200
 
 
 def _is_interrupted_error(error: HTTPError) -> bool:
@@ -280,6 +281,60 @@ def query_derived_assets_by_packaging_version(
     for result in results:
         del result["_version"]
     return results
+
+
+def query_raw_asset_locations(
+    asset_names: Iterable[str],
+    client: MetadataDbClient | None = None,
+    host: str = DOCDB_HOST,
+    database: str = DOCDB_DATABASE,
+    collection: str = DOCDB_COLLECTION,
+    version: str = DOCDB_VERSION,
+    batch_size: int = RAW_LOOKUP_BATCH_SIZE,
+) -> dict[str, str]:
+    """Map raw asset names to their S3 locations using DocDB.
+
+    A derived asset's ``data_description.source_data`` lists the names of the
+    raw assets it was built from; those names are the ``name`` of the raw
+    records queried here. Names with no matching record are absent from the
+    result. If several records share a name, the first (sorted by location)
+    wins so the outcome is deterministic.
+    """
+    names = tuple(dict.fromkeys(asset_names))
+    if not names:
+        return {}
+    if client is None:
+        client = MetadataDbClient(
+            host=host,
+            database=database,
+            collection=collection,
+            version=version,
+        )
+
+    locations: dict[str, str] = {}
+    for start in range(0, len(names), batch_size):
+        batch = list(names[start : start + batch_size])
+        records = _aggregate_with_retry(
+            client,
+            [
+                {"$match": {"name": {"$in": batch}}},
+                {"$project": {"name": 1, "location": 1}},
+            ],
+        )
+        for record in sorted(records, key=lambda item: str(item.get("location"))):
+            name, location = record.get("name"), record.get("location")
+            if not isinstance(name, str) or not isinstance(location, str):
+                continue
+            if name in locations:
+                logger.warning(
+                    "Multiple DocDB records named %r; keeping %s, ignoring %s",
+                    name,
+                    locations[name],
+                    location,
+                )
+                continue
+            locations[name] = location
+    return locations
 
 
 def query_manifest_derived_assets(

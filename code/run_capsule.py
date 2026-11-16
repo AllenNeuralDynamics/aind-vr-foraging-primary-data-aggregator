@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,7 @@ from docdb_queries import (
     DEFAULT_MANIFEST_PATH,
     query_latest_derived_assets_per_source_data,
     query_manifest_derived_assets,
+    query_raw_asset_locations,
 )
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -58,6 +60,9 @@ for _noisy_logger_name in (
 TABLES_TO_AGGREGATE: tuple[str, ...] = ("session.parquet", "sites.parquet")
 SESSION_TABLE = "session.parquet"
 SOURCE_LOCATION_COLUMN = "source_s3_location"
+# S3 location of the raw asset the processed asset was derived from (null when
+# DocDB has no unambiguous raw record for it).
+RAW_LOCATION_COLUMN = "raw_s3_location"
 # Rows per Parquet row group. Paired with sorting by session_id, this keeps each
 # row group's session_id min/max narrow, so readers filtering by session skip
 # the row groups they don't need instead of downloading most of the file.
@@ -102,6 +107,7 @@ def _read_asset(
     s3_location: str,
     asset_name: str,
     schema_migration_mode: SchemaMigrationMode = SchemaMigrationMode.FILL_MISSING,
+    raw_s3_location: str | None = None,
 ) -> pa.Table:
     """Read one expected Parquet asset and add source provenance when needed."""
     s3_path = _s3_asset_path(s3_location, asset_name)
@@ -127,6 +133,14 @@ def _read_asset(
             type=pa.string(),
         )
         table = table.append_column(SOURCE_LOCATION_COLUMN, source_locations)
+        if RAW_LOCATION_COLUMN in table.column_names:
+            raise ValueError(
+                f"{s3_path} already contains the reserved {RAW_LOCATION_COLUMN!r} column"
+            )
+        table = table.append_column(
+            RAW_LOCATION_COLUMN,
+            pa.array([raw_s3_location] * table.num_rows, type=pa.string()),
+        )
 
     # File-level metadata cannot truthfully describe an aggregate of many files.
     return table.replace_schema_metadata(None)
@@ -151,8 +165,13 @@ def aggregate(
     tables: tuple[str, ...] = TABLES_TO_AGGREGATE,
     max_workers: int = 32,
     schema_migration_mode: SchemaMigrationMode = SchemaMigrationMode.FILL_MISSING,
+    raw_locations: Mapping[str, str | None] | None = None,
 ) -> dict[str, Path]:
     """Aggregate the same Parquet assets from every S3 location.
+
+    ``raw_locations`` optionally maps each processed S3 location to the S3
+    location of its raw asset; it is stored in ``raw_s3_location`` (null when
+    unknown).
 
     Each requested asset must exist beneath every supplied S3 prefix. Reads for
     an asset run concurrently (up to ``max_workers``). ``session.parquet`` is
@@ -190,6 +209,7 @@ def aggregate(
                             location,
                             asset_name,
                             schema_migration_mode,
+                            (raw_locations or {}).get(location),
                         ),
                         s3_locations,
                     ),
@@ -254,8 +274,12 @@ def _selected_s3_locations(
     manifest_path: Path = DEFAULT_MANIFEST_PATH,
     min_version: str | None = None,
     max_version: str | None = None,
-) -> list[str]:
-    """Get selected derived-asset locations from DocDB."""
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Get selected derived-asset locations and their raw source names from DocDB.
+
+    Returns the S3 locations plus a map from each location to the raw asset
+    names listed in the derived asset's ``source_data``.
+    """
     if selection_mode == "manifest":
         selected_assets = query_manifest_derived_assets(
             manifest_path=manifest_path,
@@ -272,6 +296,7 @@ def _selected_s3_locations(
 
     locations: list[str] = []
     assets_by_location: dict[str, str] = {}
+    sources_by_location: dict[str, list[str]] = {}
     for asset in selected_assets:
         location = asset.get("s3_location")
         asset_name = str(asset.get("asset_name"))
@@ -285,6 +310,7 @@ def _selected_s3_locations(
                 f"{location} ({assets_by_location[location]!r}, {asset_name!r})"
             )
         assets_by_location[location] = asset_name
+        sources_by_location[location] = list(asset.get("session_names") or ())
         locations.append(location)
 
     logger.info(
@@ -292,7 +318,33 @@ def _selected_s3_locations(
         len(locations),
         selection_mode,
     )
-    return locations
+    return locations, sources_by_location
+
+
+def _resolve_raw_locations(
+    sources_by_location: Mapping[str, list[str]],
+) -> dict[str, str | None]:
+    """Map each processed location to its raw asset's S3 location via DocDB.
+
+    Only a derived asset with exactly one raw source can be mapped to a single
+    raw location; the rest, and sources DocDB cannot find, map to ``None``.
+    """
+    raw_by_name = query_raw_asset_locations(
+        name for names in sources_by_location.values() for name in names
+    )
+    resolved: dict[str, str | None] = {}
+    for location, names in sources_by_location.items():
+        resolved[location] = raw_by_name.get(names[0]) if len(names) == 1 else None
+    unresolved = [location for location, raw in resolved.items() if raw is None]
+    if unresolved:
+        logger.warning(
+            "No unambiguous raw asset location for %d of %d selected assets "
+            "(e.g. %s)",
+            len(unresolved),
+            len(resolved),
+            unresolved[0],
+        )
+    return resolved
 
 
 def _selection_version_bounds(
@@ -540,7 +592,7 @@ def run() -> None:
         arguments.min_packaging_version or None,
         arguments.max_packaging_version or None,
     )
-    s3_locations = _selected_s3_locations(
+    s3_locations, sources_by_location = _selected_s3_locations(
         arguments.selection_mode,
         arguments.manifest_path,
         packaging_version_bounds["minimum"],
@@ -553,6 +605,7 @@ def run() -> None:
         else aggregate(
             s3_locations,
             schema_migration_mode=arguments.schema_migration_mode,
+            raw_locations=_resolve_raw_locations(sources_by_location),
         )
     )
     if arguments.dry_run:
