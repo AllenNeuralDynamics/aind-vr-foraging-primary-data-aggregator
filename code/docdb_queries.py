@@ -28,19 +28,24 @@ AGGREGATE_BASE_DELAY_S = 5.0
 RAW_LOOKUP_BATCH_SIZE = 1000
 
 
+TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
+
+
 def _is_interrupted_error(error: HTTPError) -> bool:
-    """True for the backend's time-limit kill, surfaced by the API as a 400.
+    """True for transient backend failures that are safe to retry.
 
     Under load DocDB aborts long aggregations with ``MongoServerError:
-    operation was interrupted``; the request itself is valid, so it is safe
-    to retry. Any other 400 is a genuine client error and must propagate.
+    operation was interrupted`` (surfaced by the API as a 400), and the
+    gateway may answer 502/503/504 while the service is overloaded or
+    restarting. The request itself is valid in both cases. Any other 4xx is a
+    genuine client error and must propagate.
     """
     response = error.response
-    return (
-        response is not None
-        and response.status_code == 400
-        and "operation was interrupted" in response.text
-    )
+    if response is None:
+        return False
+    if response.status_code in TRANSIENT_STATUS_CODES:
+        return True
+    return response.status_code == 400 and "operation was interrupted" in response.text
 
 
 def _aggregate_with_retry(client: MetadataDbClient, pipeline: list[dict]) -> list:
@@ -53,7 +58,8 @@ def _aggregate_with_retry(client: MetadataDbClient, pipeline: list[dict]) -> lis
                 raise
             delay = AGGREGATE_BASE_DELAY_S * 2 ** (attempt - 1) * random.uniform(1, 1.5)
             logger.warning(
-                "DocDB aggregate interrupted (attempt %d/%d); retrying in %.0fs",
+                "DocDB aggregate failed transiently (%s; attempt %d/%d); retrying in %.0fs",
+                error.response.status_code,
                 attempt,
                 AGGREGATE_MAX_ATTEMPTS,
                 delay,
