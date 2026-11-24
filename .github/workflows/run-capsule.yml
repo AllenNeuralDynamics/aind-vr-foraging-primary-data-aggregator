@@ -4,7 +4,7 @@ on:
   schedule:
     # GitHub Actions cron is UTC-only. This lands at 6am Pacific during PDT
     # (summer) and 5am Pacific during PST (winter).
-    - cron: "0 13 * * *"
+    - cron: "42 13 * * *"
   workflow_dispatch: {}
 
 concurrency:
