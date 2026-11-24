@@ -132,44 +132,6 @@ def _manifest_sessions(manifest_path: Path) -> list[str]:
     return sessions
 
 
-def _qualifying_packaging_versions(
-    client: MetadataDbClient,
-    base_filter: dict,
-    minimum: Version | None,
-    maximum: Version | None,
-) -> list[str]:
-    """Return the distinct packaging versions matching ``base_filter`` and bounds.
-
-    A cheap ``$unwind``/``$group`` pass over the matching documents' packaging
-    versions, used to narrow the main query to an explicit ``$in`` list before
-    the expensive per-document array scan.
-    """
-    pipeline = [
-        {"$match": base_filter},
-        {"$unwind": "$processing.data_processes"},
-        {"$match": {"processing.data_processes.name": PACKAGING_PROCESS_NAME}},
-        {
-            "$group": {
-                "_id": "$processing.data_processes.output_parameters.packaging_version"
-            }
-        },
-    ]
-    distinct_versions = [
-        record["_id"]
-        for record in _aggregate_with_retry(client, pipeline)
-        if record.get("_id")
-    ]
-    qualifying: list[str] = []
-    for value in distinct_versions:
-        parsed = _parse_version(value, context="DocDB packaging_version")
-        if (minimum is not None and parsed < minimum) or (
-            maximum is not None and parsed > maximum
-        ):
-            continue
-        qualifying.append(value)
-    return qualifying
-
-
 def query_derived_assets_by_packaging_version(
     min_version: str | None = None,
     max_version: str | None = None,
@@ -217,7 +179,26 @@ def query_derived_assets_by_packaging_version(
         "location": 1,
         "data_description.creation_time": 1,
         "data_description.source_data": 1,
-        "processing.data_processes": 1,
+        # Keep only the packaging process's version: the full process list is
+        # ~6x larger and the rest is never read.
+        "processing.data_processes": {
+            "$map": {
+                "input": {
+                    "$filter": {
+                        "input": "$processing.data_processes",
+                        "as": "process",
+                        "cond": {"$eq": ["$$process.name", PACKAGING_PROCESS_NAME]},
+                    }
+                },
+                "as": "process",
+                "in": {
+                    "name": "$$process.name",
+                    "output_parameters": {
+                        "packaging_version": "$$process.output_parameters.packaging_version"
+                    },
+                },
+            }
+        },
     }
     if client is None:
         client = MetadataDbClient(
@@ -226,16 +207,6 @@ def query_derived_assets_by_packaging_version(
             collection=collection,
             version=version,
         )
-
-    if not requested_sessions and (minimum is not None or maximum is not None):
-        qualifying_versions = _qualifying_packaging_versions(
-            client, filter_query, minimum, maximum
-        )
-        if not qualifying_versions:
-            return []
-        filter_query["processing.data_processes"]["$elemMatch"][
-            "output_parameters.packaging_version"
-        ] = {"$in": qualifying_versions}
 
     # ``retrieve_docdb_records`` (``find``) hung for minutes -- or longer --
     # on this collection once it grew past ~4k matching documents, and its
